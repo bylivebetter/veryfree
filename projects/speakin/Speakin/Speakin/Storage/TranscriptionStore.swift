@@ -25,6 +25,8 @@ nonisolated struct TranscriptionRecord: Codable, Identifiable, Hashable, Sendabl
     var duration: TimeInterval
     var status: Status
     var text: String
+    /// The model's verbatim output when `text` was cleaned up (filler words removed); nil otherwise.
+    var rawText: String?
     var error: String?
     var localeIdentifier: String?
     var engine: String?
@@ -133,7 +135,7 @@ final class TranscriptionStore: ObservableObject {
             let created = (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date()
             let id = url.deletingPathExtension().lastPathComponent
             let record = TranscriptionRecord(id: id, createdAt: created, updatedAt: Date(), duration: 0,
-                                             status: .pending, text: "", error: nil, localeIdentifier: nil,
+                                             status: .pending, text: "", rawText: nil, error: nil, localeIdentifier: nil,
                                              engine: nil, audioFileName: url.lastPathComponent, pasted: false)
             loaded.append(record)
             write(record)

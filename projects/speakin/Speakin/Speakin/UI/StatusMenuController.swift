@@ -106,6 +106,12 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
         paste.toolTip = "Off: the text is only copied to the clipboard"
         menu.addItem(paste)
 
+        let fillers = NSMenuItem(title: "Remove Filler Words (um, uh…)", action: #selector(toggleFillerWords), keyEquivalent: "")
+        fillers.target = self
+        fillers.state = controller.settings.removeFillerWords ? .on : .off
+        fillers.toolTip = "English only. The verbatim text is kept in History."
+        menu.addItem(fillers)
+
         let sounds = NSMenuItem(title: "Sounds", action: #selector(toggleSounds), keyEquivalent: "")
         sounds.target = self
         sounds.state = controller.settings.soundsEnabled ? .on : .off
@@ -193,6 +199,8 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
     @objc private func toggleSounds() { controller.settings.soundsEnabled.toggle() }
 
     @objc private func toggleAutoPaste() { controller.settings.autoPaste.toggle() }
+
+    @objc private func toggleFillerWords() { controller.settings.removeFillerWords.toggle() }
 
     @objc private func toggleLaunchAtLogin() { controller.settings.launchAtLogin.toggle() }
 
