@@ -108,6 +108,7 @@ final class AppController: ObservableObject {
     @Published private(set) var recoveredCount = 0
 
     let store: TranscriptionStore
+    let vocabulary: VocabularyStore
     let settings = Settings.shared
     let hotkey = Hotkey.default
 
@@ -119,6 +120,7 @@ final class AppController: ObservableObject {
     private var resetTask: Task<Void, Never>?
     private var previewTimer: Timer?
     private var retranscribing = Set<String>()
+    private var cancellables = Set<AnyCancellable>()
 
     private struct ActiveRecording {
         var record: TranscriptionRecord
@@ -133,6 +135,7 @@ final class AppController: ObservableObject {
         } catch {
             fatalError("Speakin cannot create its data folder: \(error)")
         }
+        vocabulary = VocabularyStore(directory: store.rootURL)
     }
 
     // MARK: - Lifecycle
@@ -140,6 +143,16 @@ final class AppController: ObservableObject {
     func start() {
         store.load()
         store.enforceRetention()
+        vocabulary.load()
+        vocabulary.$entries.combineLatest(vocabulary.$ignored)
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _, _ in
+                guard let self else { return }
+                self.engine?.contextualStrings = self.vocabulary.contextualStrings
+            }
+            .store(in: &cancellables)
+        Task { [weak self] in await self?.vocabulary.rescanIfStale() }
 
         do {
             try hotkeyManager.register(hotkey)
@@ -217,7 +230,8 @@ final class AppController: ObservableObject {
             }
             await MainActor.run { self?.engineOption = option }
 
-            let engine = SpeechEngine(locale: option.locale, kind: option.kind)
+            let engine = SpeechEngine(locale: option.locale, kind: option.kind,
+                                      contextualStrings: await MainActor.run { self?.vocabulary.contextualStrings ?? [] })
             try await engine.ensureAssets { progress in
                 Task { @MainActor in
                     self?.modelProgress = progress
@@ -385,7 +399,7 @@ final class AppController: ObservableObject {
             do {
                 let raw = try await self.transcribe(session: session, audioURL: audioURL)
                 Log.speech.info("transcribed \(record.id, privacy: .public): \(raw.count) chars in \(Date().timeIntervalSince(started), format: .fixed(precision: 2))s (live: \(session != nil))")
-                let text = self.cleaned(raw, localeIdentifier: record.localeIdentifier)
+                let text = self.postProcess(raw, localeIdentifier: record.localeIdentifier)
                 record.status = .completed
                 record.text = text
                 record.rawText = text == raw ? nil : raw
@@ -433,10 +447,31 @@ final class AppController: ObservableObject {
         return try await engine.transcribe(fileAt: audioURL)
     }
 
-    private func cleaned(_ raw: String, localeIdentifier: String?) -> String {
-        guard settings.removeFillerWords else { return raw }
-        let locale = Locale(identifier: localeIdentifier ?? engineOption?.locale.identifier ?? "en_US")
-        return TranscriptCleaner.removeFillerWords(from: raw, locale: locale)
+    /// Filler removal, then vocabulary fixes. Both keep the model's output in `rawText`.
+    private func postProcess(_ raw: String, localeIdentifier: String?) -> String {
+        let localeIdentifier = localeIdentifier ?? engineOption?.locale.identifier ?? "en_US"
+        var text = raw
+        if settings.removeFillerWords {
+            text = TranscriptCleaner.removeFillerWords(from: text, locale: Locale(identifier: localeIdentifier))
+        }
+        if settings.vocabularyEnabled {
+            let language = WordOracle.shared.spellLanguage(for: localeIdentifier)
+            let fixer = VocabularyFixer(
+                terms: vocabulary.terms,
+                corrections: vocabulary.corrections,
+                isRealWord: { word in MainActor.assumeIsolated { WordOracle.shared.isRealWord(word, language: language) } },
+                isCommonPhrase: { WordOracle.isCommonPhrase($0) }
+            )
+            let result = fixer.fix(text)
+            if !result.replacements.isEmpty {
+                Log.speech.info("vocabulary fixes: \(result.replacements.map { "\($0.heard) → \($0.term)" }.joined(separator: ", "), privacy: .public)")
+            }
+            if !result.candidates.isEmpty {
+                Log.speech.info("vocabulary candidates left alone: \(result.candidates.map { "\($0.heard) ~ \($0.term)" }.joined(separator: ", "), privacy: .public)")
+            }
+            text = result.text
+        }
+        return text
     }
 
     private func fail(_ message: String) {
@@ -493,7 +528,7 @@ final class AppController: ObservableObject {
                 }
                 self.store.save(record)
                 let raw = try await engine.transcribe(fileAt: audioURL)
-                let text = self.cleaned(raw, localeIdentifier: record.localeIdentifier)
+                let text = self.postProcess(raw, localeIdentifier: record.localeIdentifier)
                 record.status = .completed
                 record.text = text
                 record.rawText = text == raw ? nil : raw

@@ -156,10 +156,27 @@ nonisolated final class SpeechEngine: @unchecked Sendable {
     let locale: Locale
     let kind: SpeechEngineKind
     private let options = SpeechAnalyzer.Options(priority: .userInitiated, modelRetention: .processLifetime)
+    private let contextLock = NSLock()
+    private var _contextualStrings: [String] = []
 
-    init(locale: Locale, kind: SpeechEngineKind) {
+    /// Names and terms the model should prefer ("Nocaps", "Knomo"). Applied to every new session.
+    var contextualStrings: [String] {
+        get { contextLock.lock(); defer { contextLock.unlock() }; return _contextualStrings }
+        set { contextLock.lock(); _contextualStrings = newValue; contextLock.unlock() }
+    }
+
+    init(locale: Locale, kind: SpeechEngineKind, contextualStrings: [String] = []) {
         self.locale = locale
         self.kind = kind
+        _contextualStrings = contextualStrings
+    }
+
+    private func makeContext() -> AnalysisContext? {
+        let strings = contextualStrings
+        guard !strings.isEmpty else { return nil }
+        let context = AnalysisContext()
+        context.contextualStrings[.general] = strings
+        return context
     }
 
     // MARK: - Locales
@@ -266,6 +283,7 @@ nonisolated final class SpeechEngine: @unchecked Sendable {
         let analyzer = SpeechAnalyzer(modules: [module], options: options)
         let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
         do {
+            if let context = makeContext() { try await analyzer.setContext(context) }
             try await analyzer.start(inputSequence: stream)
         } catch {
             continuation.finish()
@@ -290,6 +308,7 @@ nonisolated final class SpeechEngine: @unchecked Sendable {
         let resultsTask = Self.collectResults(of: module, into: sink)
         let analyzer = SpeechAnalyzer(modules: [module], options: options)
         do {
+            if let context = makeContext() { try await analyzer.setContext(context) }
             if let lastSample = try await analyzer.analyzeSequence(from: file) {
                 try await analyzer.finalizeAndFinish(through: lastSample)
             } else {

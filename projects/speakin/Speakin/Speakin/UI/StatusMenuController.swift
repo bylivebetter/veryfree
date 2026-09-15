@@ -15,6 +15,7 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
     let menu = NSMenu()
     private var cancellables = Set<AnyCancellable>()
     var onShowHistory: (() -> Void)?
+    var onShowVocabulary: (() -> Void)?
 
     init(controller: AppController) {
         self.controller = controller
@@ -89,6 +90,11 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
         let history = NSMenuItem(title: "Show History…", action: #selector(showHistory), keyEquivalent: "h")
         history.target = self
         menu.addItem(history)
+        let termCount = controller.vocabulary.terms.count
+        let vocabulary = NSMenuItem(title: "Vocabulary… (\(termCount) name\(termCount == 1 ? "" : "s"))", action: #selector(showVocabulary), keyEquivalent: "")
+        vocabulary.target = self
+        vocabulary.toolTip = "Names Speakin knows: your projects, apps and corrections"
+        menu.addItem(vocabulary)
         let pendingCount = controller.store.records.filter(\.needsTranscription).count
         if pendingCount > 0 {
             let retry = NSMenuItem(title: "Transcribe \(pendingCount) Pending Recording\(pendingCount == 1 ? "" : "s")",
@@ -111,6 +117,12 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
         fillers.state = controller.settings.removeFillerWords ? .on : .off
         fillers.toolTip = "English only. The verbatim text is kept in History."
         menu.addItem(fillers)
+
+        let names = NSMenuItem(title: "Fix Names from Vocabulary", action: #selector(toggleVocabulary), keyEquivalent: "")
+        names.target = self
+        names.state = controller.settings.vocabularyEnabled ? .on : .off
+        names.toolTip = "Rewrite misheard names (Nocaps, Knomo…) using the vocabulary"
+        menu.addItem(names)
 
         let sounds = NSMenuItem(title: "Sounds", action: #selector(toggleSounds), keyEquivalent: "")
         sounds.target = self
@@ -185,6 +197,10 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
     }
 
     @objc private func showHistory() { onShowHistory?() }
+
+    @objc private func showVocabulary() { onShowVocabulary?() }
+
+    @objc private func toggleVocabulary() { controller.settings.vocabularyEnabled.toggle() }
 
     @objc private func retryPending() { controller.recoverPendingRecordings() }
 
