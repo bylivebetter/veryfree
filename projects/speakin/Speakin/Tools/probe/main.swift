@@ -20,7 +20,7 @@ struct Probe {
     static func run() async throws {
         let args = CommandLine.arguments
         guard args.count >= 2 else {
-            print("usage: probe <audio-file> [locale]")
+            print("usage: probe <audio-file> [locale] [word1,word2,...]")
             exit(2)
         }
         let inputURL = URL(fileURLWithPath: args[1])
@@ -39,7 +39,9 @@ struct Probe {
         }
         stamp("resolved \(wanted.identifier) -> \(resolved.locale.identifier) via \(resolved.kind.displayName)")
 
-        let engine = SpeechEngine(locale: resolved.locale, kind: resolved.kind)
+        let vocab = args.count >= 4 ? args[3].split(separator: ",").map(String.init) : []
+        let engine = SpeechEngine(locale: resolved.locale, kind: resolved.kind, contextualStrings: vocab)
+        if !vocab.isEmpty { stamp("contextual strings: \(vocab)") }
         stamp("asset status: \(await engine.assetStatus())")
         try await engine.ensureAssets { p in print(String(format: "   download %.0f%%", p * 100)) }
         stamp("assets ready")

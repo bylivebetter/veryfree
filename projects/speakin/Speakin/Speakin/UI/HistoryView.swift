@@ -95,6 +95,9 @@ private struct RecordDetail: View {
     let record: TranscriptionRecord
     @ObservedObject var store: TranscriptionStore
     @ObservedObject var controller: AppController
+    @State private var isEditing = false
+    @State private var draft = ""
+    @State private var learnedMessage: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -126,6 +129,20 @@ private struct RecordDetail: View {
                     .textSelection(.enabled)
             }
 
+            if let learnedMessage {
+                Label(learnedMessage, systemImage: "graduationcap")
+                    .foregroundStyle(.green)
+            }
+
+            if isEditing {
+                TextEditor(text: $draft)
+                    .font(.body)
+                    .padding(8)
+                    .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
+                Text("Fix any misheard names, then Save & Learn — Speakin remembers the correction for next time.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     Text(record.text.isEmpty ? "(nothing heard)" : record.text)
@@ -147,10 +164,29 @@ private struct RecordDetail: View {
                 .padding(14)
             }
             .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
+            }
         }
         .padding(16)
+        .onChange(of: record.id) { _, _ in
+            isEditing = false
+            learnedMessage = nil
+        }
         .toolbar {
             ToolbarItemGroup {
+                if isEditing {
+                    Button { saveEdit() } label: { Label("Save & Learn", systemImage: "graduationcap") }
+                        .keyboardShortcut(.return, modifiers: .command)
+                        .help("Save the text and learn the corrected names")
+                    Button { isEditing = false } label: { Label("Cancel", systemImage: "xmark") }
+                } else {
+                    Button {
+                        draft = record.text
+                        learnedMessage = nil
+                        isEditing = true
+                    } label: { Label("Edit & Learn", systemImage: "pencil") }
+                        .disabled(record.status != .completed)
+                        .help("Correct misheard names; Speakin learns them")
+                }
                 Button { Paster.copy(record.text) } label: { Label("Copy", systemImage: "doc.on.doc") }
                     .disabled(record.text.isEmpty)
                     .help("Copy the text")
@@ -166,5 +202,17 @@ private struct RecordDetail: View {
                     .help("Delete this transcription and its recording")
             }
         }
+    }
+
+    private func saveEdit() {
+        let changes = TranscriptDiff.changes(from: record.text, to: draft)
+        let learned = controller.vocabulary.learn(from: changes)
+        var updated = record
+        updated.text = draft
+        store.save(updated)
+        isEditing = false
+        learnedMessage = learned.isEmpty
+            ? "Saved."
+            : "Learned: " + learned.map { "\($0.heard) → \($0.corrected)" }.joined(separator: ", ")
     }
 }

@@ -17,4 +17,4 @@ swiftc -O -parse-as-library \
   Tools/probe/main.swift \
   -framework Speech -framework AVFoundation
 echo "== expected: $TEXT"
-"$OUT/probe" "$OUT/sample-48k-stereo.wav" "${2:-en-US}"
+"$OUT/probe" "$OUT/sample-48k-stereo.wav" "${2:-en-US}" "${3:-}"

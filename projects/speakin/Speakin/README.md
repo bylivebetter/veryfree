@@ -66,6 +66,31 @@ Tools/install.sh
   - `transcriptions/<id>.json` — the newest 1000 are kept, written atomically.
   Limits are constants in `TranscriptionStore`.
 
+## Names it learns by itself
+
+Speech models turn made-up names into similar-sounding words ("Nocaps" → "knockups" / "no caps",
+"Kuddo" → "Cuddo"). Speakin fixes that with a vocabulary it builds on its own — see *Vocabulary…* in
+the menu:
+
+- **Sources, scanned automatically** (once a day, or *Rescan Mac*): names of your project folders
+  (any folder holding several repositories or Xcode projects), `.xcodeproj` names, installed apps,
+  macOS learned spellings, your user name. Ordinary dictionary words are filtered out with the spell
+  checker, so only coined names remain. Documents, Desktop and Downloads are never read.
+- **Corrections you make once**: in History, *Edit & Learn*, fix the misheard name, *Save & Learn*.
+  The exact mistake ("Latauf" → "Lattouf") is remembered and the name joins the vocabulary.
+- **How fixes are applied**, in order: learned corrections; casing ("nocaps" → "Nocaps"); phonetic
+  near-misses that are not real words ("Cuddo" → "Kuddo", "Fannius" → "Phaneus"); phrases spelled like a
+  name ("no caps" → "Nocaps") unless every word is an everyday word ("to text", "live now" — those need
+  a learned correction). Real words that merely sound like a name ("speaking" ~ "Speakin") are never
+  rewritten unless you taught that correction. The model's verbatim output stays in `rawText`.
+- Names are also handed to the speech engine as contextual strings (Apple's dictation engine honours
+  them; the main long-form model currently ignores them).
+
+Evaluated and rejected: a second engine pass (macOS allows one running analyzer per process, and the
+dictation engine is less punctuated) and Apple's on-device language model for deciding "speaking" vs
+"Speakin" (wrong in roughly a third of cases in three prompt styles). `Tools/vocab-test/run.sh` covers
+the phonetics, the fixer rules, learning and persistence.
+
 ## Languages
 
 *Language* in the menu lists every locale with an on-device model. Locales the long-form
@@ -74,7 +99,7 @@ engine). Default: the system language, falling back to English (US).
 
 ## Automation
 
-`speakin://toggle`, `speakin://start`, `speakin://stop`, `speakin://history` — for Shortcuts, Raycast,
+`speakin://toggle`, `speakin://start`, `speakin://stop`, `speakin://history`, `speakin://vocabulary` — for Shortcuts, Raycast,
 a Stream Deck, or `open speakin://toggle` from a script.
 
 Launch-time overrides go through the standard defaults argument domain, e.g.
@@ -102,10 +127,12 @@ Speakin/
   Audio/WAVWriter.swift      crash-safe WAV writer with header repair
   Audio/AudioFormatConverter.swift
   Speech/SpeechEngine.swift  SpeechAnalyzer wrapper: assets, live sessions, file transcription
+  Speech/TranscriptCleaner.swift  filler-word removal
+  Vocabulary/                VocabularyStore (sources, learning), VocabularyFixer, Phonetics, WordOracle, TranscriptDiff
   Storage/TranscriptionStore.swift
   Input/HotkeyManager.swift  Carbon global hotkey (no Accessibility needed)
   Input/Paster.swift         pasteboard + synthetic ⌘V (Accessibility needed)
-  UI/OverlayPanel.swift, UI/OverlayView.swift, UI/StatusMenuController.swift, UI/HistoryView.swift
+  UI/OverlayPanel.swift, UI/OverlayView.swift, UI/StatusMenuController.swift, UI/HistoryView.swift, UI/VocabularyView.swift
 ```
 
 ## Known limitations / next ideas
@@ -113,7 +140,6 @@ Speakin/
 - The hotkey is fixed to ⇧⌘D (`Hotkey.default` in `HotkeyManager.swift`). While Speakin runs, it wins over
   apps that use the same shortcut (Mail's *Send*, for example).
 - The clipboard is overwritten by each transcription (it is also in History).
-- Custom vocabulary (product names, people) can be fed to the model through
-  `AnalysisContext.contextualStrings` — not wired up yet.
+- Real-word collisions ("speaking" for "Speakin") need one correction in History before they are fixed.
 - The engine is behind a small wrapper (`SpeechEngine`), so a Whisper/Parakeet backend could be added
   without touching the rest.

@@ -15,12 +15,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var overlay: OverlayPanel!
     private var statusMenu: StatusMenuController!
     private var historyWindow: NSWindow?
+    private var vocabularyWindow: NSWindow?
     private var cancellables = Set<AnyCancellable>()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = makeMainMenu()
         statusMenu = StatusMenuController(controller: controller)
         statusMenu.onShowHistory = { [weak self] in self?.showHistory() }
+        statusMenu.onShowVocabulary = { [weak self] in self?.showVocabulary() }
 
         overlay = OverlayPanel()
         overlay.place(savedOrigin: controller.settings.overlayOrigin)
@@ -50,6 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case "start": controller.startIfIdle()
             case "stop": controller.stopIfRecording()
             case "history": showHistory()
+            case "vocabulary": showVocabulary()
             default: Log.app.error("unknown URL: \(url.absoluteString, privacy: .public)")
             }
         }
@@ -112,6 +115,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         windowItem.submenu = window
         main.addItem(windowItem)
         return main
+    }
+
+    private func showVocabulary() {
+        if vocabularyWindow == nil {
+            let root = VocabularyView(vocabulary: controller.vocabulary)
+            let window = NSWindow(contentViewController: NSHostingController(rootView: root))
+            window.title = "Speakin Vocabulary"
+            window.setContentSize(NSSize(width: 560, height: 520))
+            window.styleMask.insert([.titled, .closable, .resizable, .miniaturizable])
+            window.isReleasedWhenClosed = false
+            window.center()
+            window.setFrameAutosaveName("SpeakinVocabulary")
+            vocabularyWindow = window
+        }
+        NSApp.activate()
+        vocabularyWindow?.makeKeyAndOrderFront(nil)
     }
 
     private func showHistory() {
