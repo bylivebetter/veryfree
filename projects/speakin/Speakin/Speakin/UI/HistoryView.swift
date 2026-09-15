@@ -127,11 +127,24 @@ private struct RecordDetail: View {
             }
 
             ScrollView {
-                Text(record.text.isEmpty ? "(nothing heard)" : record.text)
-                    .font(.body)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(14)
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(record.text.isEmpty ? "(nothing heard)" : record.text)
+                        .font(.body)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if let raw = record.rawText {
+                        DisclosureGroup("Verbatim (before filler words were removed)") {
+                            Text(raw)
+                                .font(.body)
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.top, 6)
+                        }
+                        .font(.callout)
+                    }
+                }
+                .padding(14)
             }
             .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
         }

@@ -294,7 +294,7 @@ final class AppController: ObservableObject {
         let id = TranscriptionRecord.makeID(date: now)
         let audioURL = store.newAudioURL(id: id)
         var record = TranscriptionRecord(id: id, createdAt: now, updatedAt: now, duration: 0,
-                                         status: .recording, text: "", error: nil,
+                                         status: .recording, text: "", rawText: nil, error: nil,
                                          localeIdentifier: engineOption?.locale.identifier,
                                          engine: engineOption?.kind.rawValue,
                                          audioFileName: audioURL.lastPathComponent, pasted: false)
@@ -383,10 +383,12 @@ final class AppController: ObservableObject {
             var record = record
             let started = Date()
             do {
-                let text = try await self.transcribe(session: session, audioURL: audioURL)
-                Log.speech.info("transcribed \(record.id, privacy: .public): \(text.count) chars in \(Date().timeIntervalSince(started), format: .fixed(precision: 2))s (live: \(session != nil))")
+                let raw = try await self.transcribe(session: session, audioURL: audioURL)
+                Log.speech.info("transcribed \(record.id, privacy: .public): \(raw.count) chars in \(Date().timeIntervalSince(started), format: .fixed(precision: 2))s (live: \(session != nil))")
+                let text = self.cleaned(raw, localeIdentifier: record.localeIdentifier)
                 record.status = .completed
                 record.text = text
+                record.rawText = text == raw ? nil : raw
                 record.error = nil
 
                 if text.isEmpty {
@@ -429,6 +431,12 @@ final class AppController: ObservableObject {
         let engine = try await readyEngine()
         _ = try? WAVWriter.repairHeader(at: audioURL)
         return try await engine.transcribe(fileAt: audioURL)
+    }
+
+    private func cleaned(_ raw: String, localeIdentifier: String?) -> String {
+        guard settings.removeFillerWords else { return raw }
+        let locale = Locale(identifier: localeIdentifier ?? engineOption?.locale.identifier ?? "en_US")
+        return TranscriptCleaner.removeFillerWords(from: raw, locale: locale)
     }
 
     private func fail(_ message: String) {
@@ -484,9 +492,11 @@ final class AppController: ObservableObject {
                     record.duration = Double(file.length) / file.processingFormat.sampleRate
                 }
                 self.store.save(record)
-                let text = try await engine.transcribe(fileAt: audioURL)
+                let raw = try await engine.transcribe(fileAt: audioURL)
+                let text = self.cleaned(raw, localeIdentifier: record.localeIdentifier)
                 record.status = .completed
                 record.text = text
+                record.rawText = text == raw ? nil : raw
                 record.error = nil
                 self.store.save(record)
                 if markRecovered { self.recoveredCount += 1 }

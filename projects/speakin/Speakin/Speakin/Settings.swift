@@ -18,6 +18,7 @@ final class Settings: ObservableObject {
         static let localeIdentifier = "localeIdentifier"
         static let soundsEnabled = "soundsEnabled"
         static let autoPaste = "autoPaste"
+        static let removeFillerWords = "removeFillerWords"
         static let overlayOriginX = "overlayOriginX"
         static let overlayOriginY = "overlayOriginY"
     }
@@ -34,6 +35,11 @@ final class Settings: ObservableObject {
     /// Off = leave the text on the clipboard only.
     @Published var autoPaste: Bool {
         didSet { defaults.set(autoPaste, forKey: Key.autoPaste) }
+    }
+
+    /// Strip "um", "uh", "erm", "hmm" (English only). The verbatim text is still kept in the record.
+    @Published var removeFillerWords: Bool {
+        didSet { defaults.set(removeFillerWords, forKey: Key.removeFillerWords) }
     }
 
     var overlayOrigin: CGPoint? {
@@ -65,9 +71,10 @@ final class Settings: ObservableObject {
     }
 
     private init() {
-        defaults.register(defaults: [Key.soundsEnabled: true, Key.autoPaste: true])
+        defaults.register(defaults: [Key.soundsEnabled: true, Key.autoPaste: true, Key.removeFillerWords: true])
         localeIdentifier = defaults.string(forKey: Key.localeIdentifier)
         soundsEnabled = defaults.bool(forKey: Key.soundsEnabled)
         autoPaste = defaults.bool(forKey: Key.autoPaste)
+        removeFillerWords = defaults.bool(forKey: Key.removeFillerWords)
     }
 }

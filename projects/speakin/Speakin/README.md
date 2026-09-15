@@ -43,8 +43,11 @@ Tools/install.sh
 - The overlay colours: dark = ready · red (pulsing with your voice) = recording · blue = transcribing ·
   green check = pasted · green clipboard = copied only · orange = heard nothing / error (hover for details).
 - **Right-click the overlay** or click the **menu bar icon** for: start/stop, the last 8 transcriptions
-  (click to copy), the History window, language, *Paste Automatically*, sounds, launch at login,
-  and the data folder.
+  (click to copy), the History window, language, *Paste Automatically*, *Remove Filler Words*, sounds,
+  launch at login, and the data folder.
+- The model is close to verbatim, so "um" / "uh" come through. *Remove Filler Words* (on by default,
+  English only) strips them and repairs the punctuation around the gap; the verbatim text stays in the
+  record (`rawText`) and in the History window. `Tools/cleaner-test/run.sh` checks the rules.
 - **History window**: search, copy, re-transcribe (while the audio is still kept), reveal the audio in
   Finder, delete.
 
