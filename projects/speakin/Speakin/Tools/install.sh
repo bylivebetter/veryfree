@@ -6,5 +6,7 @@ xcodebuild -project Speakin.xcodeproj -scheme Speakin -configuration Release -de
 pkill -x Speakin 2>/dev/null || true
 rm -rf /Applications/Speakin.app
 ditto build/Build/Products/Release/Speakin.app /Applications/Speakin.app
+# Only the installed copy may answer speakin:// links; a second registered copy gets launched instead.
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u build/Build/Products/Release/Speakin.app 2>/dev/null || true
 open /Applications/Speakin.app
 echo "Installed /Applications/Speakin.app"

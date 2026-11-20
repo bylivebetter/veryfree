@@ -27,6 +27,8 @@ final class OverlayView: NSView {
 
     private let haloLayer = CALayer()
     private let circleLayer = CALayer()
+    private let badgeLayer = CALayer()
+    private let badgeDotLayer = CALayer()
     private let spinnerLayer = CAShapeLayer()
     private let glyphLayer = CALayer()
 
@@ -80,12 +82,26 @@ final class OverlayView: NSView {
         glyphLayer.frame = CGRect(x: center.x - 11, y: center.y - 11, width: 22, height: 22)
         glyphLayer.contentsGravity = .resizeAspect
         layer?.addSublayer(glyphLayer)
+
+        // Badge: shown while a session recording runs, whatever the dictation state is.
+        let badgeSize: CGFloat = 16
+        badgeLayer.frame = CGRect(x: circleFrame.maxX - badgeSize + 3, y: circleFrame.maxY - badgeSize + 3,
+                                  width: badgeSize, height: badgeSize)
+        badgeLayer.cornerRadius = badgeSize / 2
+        badgeLayer.backgroundColor = NSColor(white: 0.1, alpha: 1).cgColor
+        badgeLayer.isHidden = true
+        let dotSize: CGFloat = 9
+        badgeDotLayer.frame = CGRect(x: (badgeSize - dotSize) / 2, y: (badgeSize - dotSize) / 2, width: dotSize, height: dotSize)
+        badgeDotLayer.cornerRadius = dotSize / 2
+        badgeDotLayer.backgroundColor = NSColor(srgbRed: 1.0, green: 0.23, blue: 0.19, alpha: 1).cgColor
+        badgeLayer.addSublayer(badgeDotLayer)
+        layer?.addSublayer(badgeLayer)
     }
 
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
         let scale = window?.backingScaleFactor ?? 2
-        for l in [haloLayer, circleLayer, spinnerLayer, glyphLayer] { l.contentsScale = scale }
+        for l in [haloLayer, circleLayer, spinnerLayer, glyphLayer, badgeLayer, badgeDotLayer] { l.contentsScale = scale }
     }
 
     // MARK: - State
@@ -143,6 +159,24 @@ final class OverlayView: NSView {
             setHalo(active: false)
         }
         CATransaction.commit()
+    }
+
+    /// Shows the "a session recording is running" badge, pulsing gently.
+    func apply(sessionRecording: Bool) {
+        guard badgeLayer.isHidden == sessionRecording else { return }
+        badgeLayer.isHidden = !sessionRecording
+        let key = "speakin.badge"
+        if sessionRecording {
+            let pulse = CABasicAnimation(keyPath: "opacity")
+            pulse.fromValue = 1.0
+            pulse.toValue = 0.35
+            pulse.duration = 1.1
+            pulse.autoreverses = true
+            pulse.repeatCount = .infinity
+            badgeDotLayer.add(pulse, forKey: key)
+        } else {
+            badgeDotLayer.removeAnimation(forKey: key)
+        }
     }
 
     /// Microphone level 0...1; drives the halo while recording.
