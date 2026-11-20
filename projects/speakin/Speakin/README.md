@@ -66,6 +66,32 @@ Tools/install.sh
   - `transcriptions/<id>.json` — the newest 1000 are kept, written atomically.
   Limits are constants in `TranscriptionStore`.
 
+## Recording calls — or anything your Mac plays
+
+Press **⌃⇧R** to start, **⌃⇧R** again to stop. You get a plain **.m4a** in `~/Music/Speakin` (both
+sides of a Zoom/Teams/Meet call: what the Mac plays plus your voice), and a **.txt** transcript beside it.
+The overlay shows a pulsing red badge while it records; *Recordings…* in the menu lists them with
+Play / Reveal / Transcribe / Move to Trash.
+
+- **Their side** comes from a CoreAudio process tap: the audio apps send to the speakers or headphones,
+  captured before it gets there, whichever device you listen on. *Record From* limits it to one app.
+  macOS asks once for **Audio Recording** permission (Privacy & Security → Audio Recording).
+- **Your side** — *Your Voice* in the menu. *Automatic* records the microphone your call app is using
+  (Speakin asks CoreAudio which mic other apps are capturing from, re-checked every second), so with
+  AirPods in it records the AirPods mic even when the Mac's default input is the built-in one. With no call
+  running it uses the default input — except an idle Bluetooth headset, which the built-in mic stands in
+  for (opening a headset mic switches it to low-quality call mode). Or pick a microphone by hand, or turn
+  your voice off. While recording, the menu shows *Your voice: …* with the mic in use.
+- **Nothing the hardware does ends a recording.** The two sides are captured separately and mixed on one
+  timeline by capture time; when a device changes (headset in or out, Bluetooth switching modes, a
+  device unplugged, sleep) only that side is rebuilt, within about a second. The file is fragmented AAC:
+  if Speakin dies mid-call, everything up to the last few seconds is still a playable file, and quitting
+  mid-recording closes it properly.
+- **The hotkey always works.** Pressed while a recording is starting or saving, it is acted on as soon as
+  that step is done. Transcription runs on the side and never blocks the next recording; dictation
+  (⇧⌘D) always goes first, and a transcription it interrupts starts over afterwards.
+- Recording other people may need their consent where you live.
+
 ## Names it learns by itself
 
 Speech models turn made-up names into similar-sounding words ("Nocaps" → "knockups" / "no caps",
@@ -100,7 +126,8 @@ engine). Default: the system language, falling back to English (US).
 ## Automation
 
 `speakin://toggle`, `speakin://start`, `speakin://stop`, `speakin://history`, `speakin://vocabulary` — for Shortcuts, Raycast,
-a Stream Deck, or `open speakin://toggle` from a script.
+a Stream Deck, or `open speakin://toggle` from a script. Recording: `speakin://record` (toggle),
+`speakin://record-start`, `speakin://record-stop`, `speakin://recordings`.
 
 Launch-time overrides go through the standard defaults argument domain, e.g.
 `open Speakin.app --args -autoPaste NO`.
@@ -110,6 +137,11 @@ Launch-time overrides go through the standard defaults argument domain, e.g.
 ```bash
 log stream --level info --predicate 'subsystem == "com.bylivebetter.apps.Speakin"'
 ```
+
+While recording, the log shows which devices are in use, every rebuild and microphone switch, and peak
+levels of each side every 30 s. `open Speakin.app --args -SpeakinTestChurnSeconds 3` rebuilds both
+captures every 3 s, as if the hardware kept changing; `say -a "<output device>" …` plays test speech to a
+device you are not listening on, and the tap still records it.
 
 `Tools/probe/run.sh` pushes a `say`-generated sentence through the exact microphone → converter → WAV →
 live-transcription path, then through the crash-recovery (file) path, without touching the mic.
@@ -126,13 +158,22 @@ Speakin/
   Audio/AudioRecorder.swift  AVAudioEngine capture → 16 kHz mono → WAVWriter + live feed
   Audio/WAVWriter.swift      crash-safe WAV writer with header repair
   Audio/AudioFormatConverter.swift
+  Audio/SessionRecorder.swift  call recording: supervises both captures, follows the call's mic, writes the file
+  Audio/SessionCapture.swift   process tap (their side) and direct microphone IOProc (your side)
+  Audio/SessionMixer.swift     one timeline, sources placed by capture time
+  Audio/SessionWriter.swift    fragmented AAC .m4a writer
+  Audio/AudioDevices.swift     device queries: clock device, microphones, which mic a call is using
+  Audio/AudioProcessList.swift apps playing audio, for Record From
+  SessionController.swift    record → save → transcribe, hotkey handling
+  Sessions/SessionStore.swift  ~/Music/Speakin is the source of truth; metadata in Application Support
   Speech/SpeechEngine.swift  SpeechAnalyzer wrapper: assets, live sessions, file transcription
   Speech/TranscriptCleaner.swift  filler-word removal
   Vocabulary/                VocabularyStore (sources, learning), VocabularyFixer, Phonetics, WordOracle, TranscriptDiff
   Storage/TranscriptionStore.swift
   Input/HotkeyManager.swift  Carbon global hotkey (no Accessibility needed)
   Input/Paster.swift         pasteboard + synthetic ⌘V (Accessibility needed)
-  UI/OverlayPanel.swift, UI/OverlayView.swift, UI/StatusMenuController.swift, UI/HistoryView.swift, UI/VocabularyView.swift
+  UI/OverlayPanel.swift, UI/OverlayView.swift, UI/StatusMenuController.swift, UI/HistoryView.swift, UI/VocabularyView.swift,
+  UI/SessionsView.swift
 ```
 
 ## Known limitations / next ideas

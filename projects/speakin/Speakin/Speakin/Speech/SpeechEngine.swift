@@ -10,6 +10,7 @@
 import AVFoundation
 import Foundation
 import Speech
+import os
 
 nonisolated enum SpeechEngineKind: String, Codable, Sendable, CaseIterable {
     case speechTranscriber
@@ -88,6 +89,62 @@ nonisolated final class TranscriptSink: @unchecked Sendable {
     }
 }
 
+/// SpeechAnalyzer traps when two analyses run at once in one process, so every analysis takes its turn
+/// here. Urgent work — live dictation, or a dictation read back from its file — never waits behind a
+/// long recording: the recording's analysis is stopped, and starts over once the urgent work is done.
+actor AnalyzerLane {
+    static let shared = AnalyzerLane()
+
+    private struct Turn {
+        let urgent: Bool
+        var yield: (@Sendable () async -> Void)?
+    }
+
+    private var current: Turn?
+    private var waiting: [(urgent: Bool, continuation: CheckedContinuation<Void, Never>)] = []
+
+    /// Waits for the lane. `yield` makes the turn interruptible by urgent work: it must stop the
+    /// analysis promptly, and the caller then queues up again.
+    func enter(urgent: Bool, yield: (@Sendable () async -> Void)? = nil) async {
+        while let turn = current {
+            if urgent, !turn.urgent, let stop = turn.yield {
+                current?.yield = nil
+                Task { await stop() }
+            }
+            await withCheckedContinuation { waiting.append((urgent, $0)) }
+        }
+        current = Turn(urgent: urgent, yield: yield)
+    }
+
+    func leave() {
+        current = nil
+        guard !waiting.isEmpty else { return }
+        let next = waiting.firstIndex { $0.urgent } ?? 0
+        waiting.remove(at: next).continuation.resume()
+    }
+}
+
+/// Lets a file's analysis be stopped by urgent work exactly once, and tells afterwards whether it was.
+nonisolated private final class Interruption: @unchecked Sendable {
+    private let lock = NSLock()
+    private var state = 0   // 0 running, 1 finished, 2 interrupted
+
+    /// True if the analysis was still running and must now be stopped.
+    func interrupt() -> Bool {
+        lock.withLock {
+            guard state == 0 else { return false }
+            state = 2
+            return true
+        }
+    }
+
+    func finish() {
+        lock.withLock { if state == 0 { state = 1 } }
+    }
+
+    var wasInterrupted: Bool { lock.withLock { state == 2 } }
+}
+
 /// One live (microphone) analysis session. `feed` is safe to call from the audio thread.
 nonisolated final class LiveTranscriptionSession: @unchecked Sendable {
     private let analyzer: SpeechAnalyzer
@@ -98,6 +155,7 @@ nonisolated final class LiveTranscriptionSession: @unchecked Sendable {
     private let resultsTask: Task<Void, Error>
     private let lock = NSLock()
     private var finished = false
+    private var laneReleased = false
 
     fileprivate init(analyzer: SpeechAnalyzer,
                      module: any SpeechModule,
@@ -133,8 +191,14 @@ nonisolated final class LiveTranscriptionSession: @unchecked Sendable {
     func finish() async throws -> String {
         markFinished()
         continuation.finish()
-        try await analyzer.finalizeAndFinishThroughEndOfInput()
-        try await resultsTask.value
+        do {
+            try await analyzer.finalizeAndFinishThroughEndOfInput()
+            try await resultsTask.value
+        } catch {
+            await releaseLane()
+            throw error
+        }
+        await releaseLane()
         return sink.finalizedText
     }
 
@@ -143,12 +207,30 @@ nonisolated final class LiveTranscriptionSession: @unchecked Sendable {
         continuation.finish()
         await analyzer.cancelAndFinishNow()
         resultsTask.cancel()
+        await releaseLane()
+    }
+
+    deinit {
+        // A session dropped without finishing must not hold every later transcription up.
+        if claimLaneRelease() { Task { await AnalyzerLane.shared.leave() } }
     }
 
     private func markFinished() {
         lock.lock()
         finished = true
         lock.unlock()
+    }
+
+    private func releaseLane() async {
+        if claimLaneRelease() { await AnalyzerLane.shared.leave() }
+    }
+
+    private func claimLaneRelease() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !laneReleased else { return false }
+        laneReleased = true
+        return true
     }
 }
 
@@ -261,8 +343,19 @@ nonisolated final class SpeechEngine: @unchecked Sendable {
         }
     }
 
-    /// Starts a streaming session for microphone audio arriving in `inputFormat`.
+    /// Starts a streaming session for microphone audio arriving in `inputFormat`. A file being
+    /// transcribed meanwhile is interrupted (two analyzers at once crash Speech) and resumes afterwards.
     func startLiveSession(inputFormat: AVAudioFormat) async throws -> LiveTranscriptionSession {
+        await AnalyzerLane.shared.enter(urgent: true)
+        do {
+            return try await makeLiveSession(inputFormat: inputFormat)
+        } catch {
+            await AnalyzerLane.shared.leave()
+            throw error
+        }
+    }
+
+    private func makeLiveSession(inputFormat: AVAudioFormat) async throws -> LiveTranscriptionSession {
         let module = makeModule()
         guard let analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [module],
                                                                                   considering: inputFormat) else {
@@ -298,15 +391,37 @@ nonisolated final class SpeechEngine: @unchecked Sendable {
                                         resultsTask: resultsTask)
     }
 
-    /// Transcribes an audio file from disk (recovery / re-transcription path).
-    func transcribe(fileAt url: URL) async throws -> String {
-        let file = try AVAudioFile(forReading: url)
-        guard file.length > 0 else { throw SpeechEngineError.emptyAudio }
+    /// Transcribes an audio file from disk (recovery, re-transcription, recorded sessions). `urgent` is
+    /// for a dictation someone is waiting on; anything else gives way to dictation and starts over after.
+    func transcribe(fileAt url: URL, urgent: Bool = false) async throws -> String {
+        while true {
+            let file = try AVAudioFile(forReading: url)
+            guard file.length > 0 else { throw SpeechEngineError.emptyAudio }
+            let module = makeModule()
+            let analyzer = SpeechAnalyzer(modules: [module], options: options)
+            let interruption = Interruption()
+            let stop: @Sendable () async -> Void = {
+                guard interruption.interrupt() else { return }
+                await analyzer.cancelAndFinishNow()
+            }
+            await AnalyzerLane.shared.enter(urgent: urgent, yield: urgent ? nil : stop)
+            let result: Result<String, Error>
+            do {
+                result = .success(try await analyze(file, module: module, analyzer: analyzer))
+            } catch {
+                result = .failure(error)
+            }
+            interruption.finish()
+            await AnalyzerLane.shared.leave()
+            guard interruption.wasInterrupted else { return try result.get() }
+            Log.speech.info("transcription of \(url.lastPathComponent, privacy: .public) gave way to dictation; starting it again")
+            try Task.checkCancellation()
+        }
+    }
 
-        let module = makeModule()
+    private func analyze(_ file: AVAudioFile, module: any SpeechModule, analyzer: SpeechAnalyzer) async throws -> String {
         let sink = TranscriptSink()
         let resultsTask = Self.collectResults(of: module, into: sink)
-        let analyzer = SpeechAnalyzer(modules: [module], options: options)
         do {
             if let context = makeContext() { try await analyzer.setContext(context) }
             if let lastSample = try await analyzer.analyzeSequence(from: file) {

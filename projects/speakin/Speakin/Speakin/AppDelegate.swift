@@ -12,17 +12,23 @@ import os
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let controller = AppController.shared
+    private lazy var sessions = SessionController(supportDirectory: controller.store.rootURL) { [controller] url in
+        try await controller.transcribeFile(url)
+    }
     private var overlay: OverlayPanel!
     private var statusMenu: StatusMenuController!
     private var historyWindow: NSWindow?
     private var vocabularyWindow: NSWindow?
+    private var sessionsWindow: NSWindow?
     private var cancellables = Set<AnyCancellable>()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = makeMainMenu()
-        statusMenu = StatusMenuController(controller: controller)
+        statusMenu = StatusMenuController(controller: controller, sessions: sessions)
         statusMenu.onShowHistory = { [weak self] in self?.showHistory() }
         statusMenu.onShowVocabulary = { [weak self] in self?.showVocabulary() }
+        statusMenu.onShowSessions = { [weak self] in self?.showSessions() }
+        controller.onSessionHotkey = { [weak self] in self?.sessions.toggle() }
 
         overlay = OverlayPanel()
         overlay.place(savedOrigin: controller.settings.overlayOrigin)
@@ -37,10 +43,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         bindOverlay()
         controller.start()
+        sessions.start()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         controller.willTerminate()
+        sessions.willTerminate()
     }
 
     /// speakin://toggle, speakin://start, speakin://stop, speakin://history — for Shortcuts, Raycast, Stream Deck…
@@ -53,6 +61,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case "stop": controller.stopIfRecording()
             case "history": showHistory()
             case "vocabulary": showVocabulary()
+            case "record": sessions.toggle()
+            case "record-start": sessions.startRecording()
+            case "record-stop": sessions.stop()
+            case "recordings": showSessions()
             default: Log.app.error("unknown URL: \(url.absoluteString, privacy: .public)")
             }
         }
@@ -83,6 +95,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.$level
             .receive(on: RunLoop.main)
             .sink { [weak self] level in self?.overlay.overlayView.apply(level: level) }
+            .store(in: &cancellables)
+
+        sessions.$phase
+            .receive(on: RunLoop.main)
+            .sink { [weak self] phase in self?.overlay.overlayView.apply(sessionRecording: phase.isRecording) }
             .store(in: &cancellables)
     }
 
@@ -115,6 +132,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         windowItem.submenu = window
         main.addItem(windowItem)
         return main
+    }
+
+    private func showSessions() {
+        if sessionsWindow == nil {
+            let root = SessionsView(store: sessions.store, controller: sessions)
+            let window = NSWindow(contentViewController: NSHostingController(rootView: root))
+            window.title = "Speakin Recordings"
+            window.setContentSize(NSSize(width: 900, height: 560))
+            window.styleMask.insert([.titled, .closable, .resizable, .miniaturizable])
+            window.isReleasedWhenClosed = false
+            window.center()
+            window.setFrameAutosaveName("SpeakinSessions")
+            sessionsWindow = window
+        }
+        sessions.store.refresh()
+        NSApp.activate()
+        sessionsWindow?.makeKeyAndOrderFront(nil)
     }
 
     private func showVocabulary() {

@@ -110,7 +110,9 @@ final class AppController: ObservableObject {
     let store: TranscriptionStore
     let vocabulary: VocabularyStore
     let settings = Settings.shared
-    let hotkey = Hotkey.default
+    let hotkey = Hotkey.dictation
+    /// Called when the recording hotkey is pressed; wired to the session controller.
+    var onSessionHotkey: (() -> Void)?
 
     private let hotkeyManager = HotkeyManager()
     private let recorder = AudioRecorder()
@@ -155,9 +157,9 @@ final class AppController: ObservableObject {
         Task { [weak self] in await self?.vocabulary.rescanIfStale() }
 
         do {
-            try hotkeyManager.register(hotkey)
-            hotkeyManager.onPress = { [weak self] in self?.toggle() }
-            Log.app.info("hotkey \(self.hotkey.displayString, privacy: .public) registered")
+            try hotkeyManager.register(hotkey) { [weak self] in self?.toggle() }
+            try hotkeyManager.register(.session) { [weak self] in self?.onSessionHotkey?() }
+            Log.app.info("hotkeys \(self.hotkey.displayString, privacy: .public) (dictate) and \(Hotkey.session.displayString, privacy: .public) (record) registered")
         } catch {
             lastError = error.localizedDescription
             Log.app.error("hotkey registration failed: \(error.localizedDescription, privacy: .public)")
@@ -444,14 +446,23 @@ final class AppController: ObservableObject {
         }
         let engine = try await readyEngine()
         _ = try? WAVWriter.repairHeader(at: audioURL)
-        return try await engine.transcribe(fileAt: audioURL)
+        // Someone is waiting for this text: it goes ahead of any long recording being transcribed.
+        return try await engine.transcribe(fileAt: audioURL, urgent: true)
+    }
+
+    /// Transcribes a recorded session file. Misheard names are fixed, but nothing else is rewritten:
+    /// a recording of a call should stay a faithful record.
+    func transcribeFile(_ url: URL) async throws -> String {
+        let engine = try await readyEngine()
+        let raw = try await engine.transcribe(fileAt: url)
+        return postProcess(raw, localeIdentifier: engine.locale.identifier, removeFillers: false)
     }
 
     /// Filler removal, then vocabulary fixes. Both keep the model's output in `rawText`.
-    private func postProcess(_ raw: String, localeIdentifier: String?) -> String {
+    private func postProcess(_ raw: String, localeIdentifier: String?, removeFillers: Bool = true) -> String {
         let localeIdentifier = localeIdentifier ?? engineOption?.locale.identifier ?? "en_US"
         var text = raw
-        if settings.removeFillerWords {
+        if removeFillers, settings.removeFillerWords {
             text = TranscriptCleaner.removeFillerWords(from: text, locale: Locale(identifier: localeIdentifier))
         }
         if settings.vocabularyEnabled {

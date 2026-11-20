@@ -11,14 +11,17 @@ import Combine
 @MainActor
 final class StatusMenuController: NSObject, NSMenuDelegate {
     private let controller: AppController
+    private let sessions: SessionController
     private let statusItem: NSStatusItem
     let menu = NSMenu()
     private var cancellables = Set<AnyCancellable>()
     var onShowHistory: (() -> Void)?
     var onShowVocabulary: (() -> Void)?
+    var onShowSessions: (() -> Void)?
 
-    init(controller: AppController) {
+    init(controller: AppController, sessions: SessionController) {
         self.controller = controller
+        self.sessions = sessions
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         super.init()
         menu.delegate = self
@@ -28,20 +31,28 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.updateIcon() }
             .store(in: &cancellables)
+        sessions.$phase
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.updateIcon() }
+            .store(in: &cancellables)
     }
 
     private func updateIcon() {
         let name: String
-        switch controller.phase {
-        case .recording: name = "record.circle"
-        case .transcribing: name = "ellipsis.circle"
-        case .failed: name = "exclamationmark.circle"
-        default: name = "mic.circle"
+        if sessions.phase.isRecording {
+            name = "record.circle.fill"
+        } else {
+            switch controller.phase {
+            case .recording: name = "record.circle"
+            case .transcribing: name = "ellipsis.circle"
+            case .failed: name = "exclamationmark.circle"
+            default: name = "mic.circle"
+            }
         }
         let image = NSImage(systemSymbolName: name, accessibilityDescription: "Speakin")
         image?.isTemplate = true
         statusItem.button?.image = image
-        statusItem.button?.toolTip = controller.statusLine
+        statusItem.button?.toolTip = sessions.phase.isRecording ? sessions.statusLine : controller.statusLine
     }
 
     // MARK: - Menu
@@ -67,6 +78,9 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
         toggle.isEnabled = controller.phase != .transcribing
         toggle.toolTip = "Global hotkey: \(controller.hotkey.displayString)"
         menu.addItem(toggle)
+        menu.addItem(.separator())
+
+        addRecordingItems(to: menu)
         menu.addItem(.separator())
 
         let recent = controller.store.records.prefix(8)
@@ -156,6 +170,149 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
         menu.addItem(quit)
     }
 
+    /// Recording what the Mac is playing — a call, a video, anything — with your voice.
+    private func addRecordingItems(to menu: NSMenu) {
+        let isRecording = sessions.phase.isRecording
+        let title: String
+        switch sessions.phase {
+        case .recording(let since): title = "Stop Recording (\(AppController.format(Date().timeIntervalSince(since))))"
+        case .starting, .finishing: title = sessions.statusLine
+        case .idle, .failed: title = "Record \(sessions.settings.sessionSource.displayName)"
+        }
+        let record = NSMenuItem(title: title, action: #selector(toggleSessionRecording), keyEquivalent: "")
+        record.target = self
+        record.isEnabled = !sessions.phase.isTransitioning
+        record.image = NSImage(systemSymbolName: isRecording ? "stop.circle.fill" : "record.circle",
+                               accessibilityDescription: nil)
+        record.toolTip = "Global hotkey: \(Hotkey.session.displayString) — saves an .m4a you can open and keep"
+        menu.addItem(record)
+
+        if isRecording {
+            let voice: String
+            let symbol: String
+            if sessions.microphone == .off {
+                (voice, symbol) = ("Your voice: not recorded", "mic.slash")
+            } else if let name = sessions.status.microphoneName {
+                (voice, symbol) = sessions.status.microphoneSilent
+                    ? ("Your voice: \(name) — no sound coming in", "mic.slash")
+                    : ("Your voice: \(name)", "mic.fill")
+            } else {
+                (voice, symbol) = ("Your voice: no microphone found", "mic.slash")
+            }
+            let item = disabled(voice)
+            item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+            item.indentationLevel = 1
+            menu.addItem(item)
+        }
+
+        if sessions.silentSystemAudio {
+            let warning = NSMenuItem(title: "No system audio — allow Audio Recording…", action: #selector(openAudioRecordingSettings), keyEquivalent: "")
+            warning.target = self
+            warning.image = NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: nil)
+            menu.addItem(warning)
+        }
+
+        menu.addItem(recordingSourceMenuItem())
+        menu.addItem(microphoneMenuItem())
+
+        let transcribe = NSMenuItem(title: "Transcribe Recordings", action: #selector(toggleTranscribeSessions), keyEquivalent: "")
+        transcribe.target = self
+        transcribe.state = sessions.settings.transcribeSessions ? .on : .off
+        transcribe.toolTip = "Save a .txt transcript beside each recording"
+        menu.addItem(transcribe)
+
+        if !sessions.transcribing.isEmpty {
+            let count = sessions.transcribing.count
+            menu.addItem(disabled("Transcribing \(count) recording\(count == 1 ? "" : "s")…"))
+        }
+
+        let count = sessions.store.sessions.count
+        let list = NSMenuItem(title: count > 0 ? "Recordings… (\(count))" : "Recordings…", action: #selector(showSessions), keyEquivalent: "r")
+        list.target = self
+        menu.addItem(list)
+
+        let folder = NSMenuItem(title: "Open Recordings Folder", action: #selector(openSessionsFolder), keyEquivalent: "")
+        folder.target = self
+        folder.toolTip = sessions.store.folderURL.path
+        menu.addItem(folder)
+    }
+
+    private func recordingSourceMenuItem() -> NSMenuItem {
+        let item = NSMenuItem(title: "Record From", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        let all = NSMenuItem(title: "All Audio", action: #selector(selectSessionSource(_:)), keyEquivalent: "")
+        all.target = self
+        all.state = sessions.settings.sessionSource == .allAudio ? .on : .off
+        submenu.addItem(all)
+        submenu.addItem(.separator())
+
+        var listed = Set<String>()
+        for process in AudioProcessList.current() where !process.bundleID.isEmpty {
+            guard listed.insert(process.bundleID).inserted else { continue }
+            let entry = NSMenuItem(title: process.isPlaying ? "\(process.name) ●" : process.name,
+                                   action: #selector(selectSessionSource(_:)), keyEquivalent: "")
+            entry.target = self
+            entry.representedObject = [process.bundleID, process.name]
+            entry.state = sessions.settings.sessionSource.bundleID == process.bundleID ? .on : .off
+            submenu.addItem(entry)
+        }
+        // The app chosen earlier may not be running now; keep it selectable.
+        if case .app(let bundleID, let name) = sessions.settings.sessionSource, !listed.contains(bundleID) {
+            let entry = NSMenuItem(title: "\(name) (not running)", action: #selector(selectSessionSource(_:)), keyEquivalent: "")
+            entry.target = self
+            entry.representedObject = [bundleID, name]
+            entry.state = .on
+            submenu.addItem(entry)
+        }
+        if listed.isEmpty { submenu.addItem(disabled("No other apps are using audio")) }
+        item.submenu = submenu
+        return item
+    }
+
+    /// Whose voice goes in: automatically the mic the call is using, one picked by hand, or none.
+    private func microphoneMenuItem() -> NSMenuItem {
+        let choice = sessions.microphone
+        let item = NSMenuItem(title: "Your Voice", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+
+        let automatic = NSMenuItem(title: "Automatic — the Mic Your Call Uses", action: #selector(selectSessionMicrophone(_:)), keyEquivalent: "")
+        automatic.target = self
+        automatic.state = choice == .automatic ? .on : .off
+        automatic.toolTip = "Records the microphone Zoom, Teams, Meet… are using — your headset when it is in — and the Mac's input otherwise"
+        submenu.addItem(automatic)
+        submenu.addItem(.separator())
+
+        var listed = false
+        for microphone in AudioDevices.microphones() {
+            let entry = NSMenuItem(title: microphone.name, action: #selector(selectSessionMicrophone(_:)), keyEquivalent: "")
+            entry.target = self
+            entry.representedObject = [microphone.uid, microphone.name]
+            if case .device(let uid, _) = choice, uid == microphone.uid {
+                entry.state = .on
+                listed = true
+            }
+            submenu.addItem(entry)
+        }
+        // The microphone picked earlier may be unplugged now; keep it selectable.
+        if case .device(let uid, let name) = choice, !listed {
+            let entry = NSMenuItem(title: "\(name) (not connected — using Automatic)", action: #selector(selectSessionMicrophone(_:)), keyEquivalent: "")
+            entry.target = self
+            entry.representedObject = [uid, name]
+            entry.state = .on
+            submenu.addItem(entry)
+        }
+        submenu.addItem(.separator())
+
+        let off = NSMenuItem(title: "Don't Record My Voice", action: #selector(selectSessionMicrophone(_:)), keyEquivalent: "")
+        off.target = self
+        off.tag = 1
+        off.state = choice == .off ? .on : .off
+        submenu.addItem(off)
+
+        item.submenu = submenu
+        return item
+    }
+
     private func languageMenuItem() -> NSMenuItem {
         let item = NSMenuItem(title: "Language", action: nil, keyEquivalent: "")
         let submenu = NSMenu()
@@ -199,6 +356,32 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
     @objc private func showHistory() { onShowHistory?() }
 
     @objc private func showVocabulary() { onShowVocabulary?() }
+
+    @objc private func showSessions() { onShowSessions?() }
+
+    @objc private func toggleSessionRecording() { sessions.toggle() }
+
+    @objc private func selectSessionMicrophone(_ sender: NSMenuItem) {
+        if let pair = sender.representedObject as? [String], pair.count == 2 {
+            sessions.microphone = .device(uid: pair[0], name: pair[1])
+        } else {
+            sessions.microphone = sender.tag == 1 ? .off : .automatic
+        }
+    }
+
+    @objc private func toggleTranscribeSessions() { sessions.settings.transcribeSessions.toggle() }
+
+    @objc private func openSessionsFolder() { sessions.store.openFolder() }
+
+    @objc private func openAudioRecordingSettings() { sessions.openAudioRecordingSettings() }
+
+    @objc private func selectSessionSource(_ sender: NSMenuItem) {
+        guard let pair = sender.representedObject as? [String], pair.count == 2 else {
+            sessions.source = .allAudio
+            return
+        }
+        sessions.source = .app(bundleID: pair[0], name: pair[1])
+    }
 
     @objc private func toggleVocabulary() { controller.settings.vocabularyEnabled.toggle() }
 
